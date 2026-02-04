@@ -103,7 +103,17 @@ npm install
 
 ### 4. Prepare the Vector Database
 
-The vector embeddings need to be pre-computed using Google Colab (for free GPU access):
+**Option A: Download Pre-computed Embeddings (Recommended)**
+
+The vector database files are too large for GitHub. Download them from Google Drive:
+
+1. Go to [📁 Google Drive - Qdrant Collection Files](https://drive.google.com/drive/folders/1qsFZbZKa5F7GLTpWWsJlcAj5zJcpUTfq?usp=sharing)
+2. Download the collection folder contents
+3. Place the downloaded files in `backend/qdrant_storage/collection/`
+
+**Option B: Generate Embeddings Yourself**
+
+If you prefer to generate embeddings from scratch using Google Colab (for free GPU access):
 
 1. Upload `processing/data_processing_pipeline.ipynb` to Google Colab
 2. Run all cells to process images and generate embeddings
