@@ -1,0 +1,226 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{float}
+
+\geometry{margin=1in}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+
+\lstset{style=mystyle}
+
+\title{\textbf{Multimodal Visual Search Engine} \\ \large Implementing a Pinterest-like Discovery System using SIGLIP, DINOv2, and Qdrant}
+\author{Project Report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Abstract}
+This project presents a multimodal search engine capable of retrieving images via natural language (Text-to-Image) and visual similarity (Image-to-Image). By indexing 10,000 images from the Unsplash Lite dataset, we demonstrate a scalable architecture for semantic discovery. The system leverages state-of-the-art transformer models—SIGLIP for text understanding and DINOv2 for visual features—integrated with Qdrant for high-performance vector search. The technology stack includes Python, FastAPI, React, and PyTorch, providing a full-stack solution from data ingestion to user interface.
+
+\section{Introduction}
+\subsection{Problem Statement}
+Traditional keyword-based search engines rely heavily on manual tagging and metadata. This approach is labor-intensive, prone to human error, and fails to capture the visual nuances of content, such as texture, style, and composition. Users often struggle to find images when they cannot describe them with precise keywords.
+
+\subsection{Objective}
+The primary objective is to build a system that "sees" content like a human. This involves two core capabilities:
+\begin{itemize}
+    \item \textbf{Semantic Search:} Allowing users to search by meaning (e.g., "peaceful morning") rather than just keyword matching.
+    \item \textbf{Visual Search:} Enabling "Reverse Image Search" where a user can find images visually similar to a query image.
+\end{itemize}
+
+\subsection{Scope}
+The project scope is a functional prototype deploying state-of-the-art Transformer models in a local environment, simulating a commercial-grade discovery system similar to Pinterest.
+
+\section{Theoretical Background}
+\subsection{Vector Embeddings}
+Vector embeddings are high-dimensional arrays of numbers that represent the semantic meaning of data. In this project, we convert both images and text into 768-dimensional vectors. If two vectors are close to each other in this multi-dimensional space, their contents are semantically similar.
+
+\subsection{The Models}
+\begin{itemize}
+    \item \textbf{SIGLIP (Google):} We selected the Sigmoid Loss for Language Image Pre-Training (SIGLIP) model for the Text-to-Image task. It outperforms standard CLIP models at scale by using a sigmoid loss function, allowing for better zero-shot classification and retrieval.
+    \item \textbf{DINOv2 (Meta):} For the Visual Search task, we utilized DINOv2. Unlike CLIP, DINOv2 is trained using self-supervised learning, making it exceptionally good at capturing object geometry, depth, and texture without relying on text captions.
+\end{itemize}
+
+\subsection{Vector Search (ANN)}
+We use Qdrant, a vector database, to perform Approximate Nearest Neighbor (ANN) search. Qdrant calculates the Cosine Similarity between the query vector and stored vectors to efficiently retrieve the most relevant results.
+
+\section{System Architecture}
+The system is composed of five main layers, designed to handle high-throughput data ingestion and low-latency search retrieval.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{system_architecture_diagram.png}
+    \caption{High-Level System Architecture Diagram}
+    \label{fig:architecture}
+\end{figure}
+
+\begin{enumerate}
+    \item \textbf{Data Layer:} The Unsplash Lite Dataset serves as the source, providing high-quality images and rich metadata (descriptions, categories).
+    \item \textbf{Ingestion Engine:} A Google Colab-based pipeline responsible for downloading images, generating embeddings using GPU acceleration, and indexing them into the vector database.
+    \item \textbf{Storage Layer:} Qdrant (Vector Database) running locally. It manages two distinct collections for semantic and visual search, optimized for cosine similarity operations.
+    \item \textbf{API Layer:} A FastAPI backend that handles inference logic, model management, and communicates with Qdrant. It exposes RESTful endpoints for the frontend.
+    \item \textbf{Presentation Layer:} A React.js frontend providing an intuitive user interface for text queries and visual discovery.
+\end{enumerate}
+
+\section{Implementation Details}
+
+\subsection{Data Ingestion Pipeline}
+The core challenge was processing a large dataset efficiently. We utilized Google Colab T4 GPUs for accelerated inference. The pipeline involves downloading images, processing them through two distinct transformer models, and upserting vectors to Qdrant.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{colab_progress_bars.png}
+    \caption{Data Ingestion Progress in Google Colab showing nested progress bars for batches.}
+    \label{fig:ingestion}
+\end{figure}
+
+\subsubsection{Concurrency Strategy}
+To maximize network throughput while managing RAM usage, we moved from sequential processing to an \texttt{asyncio} approach with Semaphores. This limited the number of concurrent downloads to prevent memory overflows.
+
+\begin{lstlisting}[language=Python, caption=Async Ingestion Loop with Semaphore]
+async def ingestion_loop():
+    global client, batch_counter
+    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    async with aiohttp.ClientSession() as session:
+        for i in main_progress_bar:
+            batch_df = datasets["photos"].iloc[i:i + BATCH_SIZE]
+            if batch_df.empty: continue
+
+            # 1. Download with Semaphore
+            tasks = [download_image(session, row, semaphore) for _, row in batch_df.iterrows()]
+            
+            images_to_process = []
+            rows_to_process = []
+            
+            for future in asyncio.as_completed(tasks):
+                img, row = await future
+                if img:
+                    images_to_process.append(img)
+                    rows_to_process.append(row)
+
+            # ... (Encoding and Upserting logic) ...
+\end{lstlisting}
+
+\subsubsection{Persistence Strategy}
+To handle Google Colab's runtime disconnections, we implemented a checkpointing system. The Qdrant storage folder is automatically zipped and backed up to Google Drive every $N$ batches, allowing the pipeline to resume from where it left off.
+
+\subsection{The Vector Database Setup}
+We configured Qdrant with two distinct collections to optimize for different search types:
+\begin{itemize}
+    \item \texttt{text\_visual\_index} (768 dim): Stores SIGLIP embeddings for semantic text search.
+    \item \texttt{pure\_visual\_index} (768 dim): Stores DINOv2 embeddings for visual similarity search.
+\end{itemize}
+We mapped the DataFrame integer index to Qdrant's Point ID and stored the original Unsplash ID in the payload to handle UUIDs correctly.
+
+\subsection{The Search API (FastAPI)}
+The backend uses FastAPI's lifespan events to load the heavy SIGLIP model into GPU memory only once upon startup, ensuring low latency for subsequent requests. This "warm start" approach significantly reduces the time-to-first-byte for search queries.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{api_docs_swagger.png}
+    \caption{FastAPI Swagger UI Documentation showing available endpoints.}
+    \label{fig:api_docs}
+\end{figure}
+
+\textbf{Endpoints:}
+\begin{itemize}
+    \item \texttt{GET /search/text}: Encodes the query string into a vector and searches the \texttt{text\_visual\_index}.
+    \item \texttt{GET /search/visual/\{id\}}: Retrieves the existing DINOv2 vector for a given image ID and searches the \texttt{pure\_visual\_index}.
+\end{itemize}
+
+\subsection{Frontend (React)}
+The frontend provides a clean, Pinterest-like grid layout. Users enter a text query to see initial results. Clicking on any image triggers a "Find Similar" action, which queries the visual similarity endpoint to return visually related content.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{frontend_ui_screenshot.png}
+    \caption{React Frontend displaying search results in a masonry grid layout.}
+    \label{fig:frontend}
+\end{figure}
+
+\section{Challenges \& Solutions}
+
+\begin{itemize}
+    \item \textbf{RAM Overload:} Attempting to download 128 images concurrently crashed the system RAM. 
+    \textbf{Solution:} Implemented \texttt{asyncio.Semaphore(10)} to strictly limit active downloads.
+    
+    \item \textbf{Download Fails (403 Forbidden):} Some servers rejected automated requests.
+    \textbf{Solution:} Added Browser User-Agent headers to all requests to mimic human traffic.
+    
+    \item \textbf{Process Freezing:} Some downloads would hang indefinitely, blocking the pipeline.
+    \textbf{Solution:} Wrapped downloads in \texttt{asyncio.wait\_for} with a strict 15-second timeout.
+    
+    \item \textbf{UUID Errors:} Qdrant requires integer or UUID formatted IDs, but our dataset had string IDs.
+    \textbf{Solution:} We used the dataframe index (integer) as the Point ID and stored the string ID in the metadata payload.
+    
+    \item \textbf{Colab Disconnects:} Long processing times risked data loss.
+    \textbf{Solution:} Implemented a resume-capable ingestion loop that checks for existing backups on Google Drive.
+\end{itemize}
+
+\section{Results \& Analysis}
+\subsection{Performance}
+The system successfully indexed 10,000 images. The average search latency is well within acceptable limits for a real-time application, thanks to the efficient ANN search provided by Qdrant.
+
+\subsection{Qualitative Results}
+\begin{itemize}
+    \item \textbf{Text Search:} A query for "Peaceful morning" retrieves images with soft lighting, sunrises, and calm nature scenes, demonstrating SIGLIP's semantic understanding.
+    \item \textbf{Visual Search:} Selecting an image of a brick wall correctly retrieves other brick walls of various colors and angles, showing DINOv2's ability to capture texture and geometry.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.45\textwidth]{result_text_search.png}
+    \includegraphics[width=0.45\textwidth]{result_visual_search.png}
+    \caption{Left: Results for text query "Peaceful morning". Right: Visual similarity results for a texture query.}
+    \label{fig:results}
+\end{figure}
+
+\section{Future Improvements}
+\begin{itemize}
+    \item \textbf{Object Detection:} Integrating YOLO would allow users to crop specific objects (e.g., "Find this specific chair") before searching, improving granularity.
+    \item \textbf{Re-ranking:} Adding a Cross-Encoder step to refine the top 100 results could significantly improve relevance accuracy.
+    \item \textbf{Dockerization:} Containerizing the API and Qdrant would simplify deployment and reproducibility.
+\end{itemize}
+
+\section{Conclusion}
+This project successfully demonstrates a modern, multimodal search engine. By combining efficient MLOps practices like async I/O and batching with powerful foundation models, we built a robust "Proof of Concept" that rivals commercial discovery systems in quality.
+
+\section{References}
+\begin{enumerate}
+    \item Qdrant Documentation
+    \item Unsplash Lite Dataset
+    \item Zhai et al., "Sigmoid Loss for Language Image Pre-Training"
+    \item Oquab et al., "DINOv2: Learning Robust Visual Features without Supervision"
+\end{enumerate}
+
+\end{document}
